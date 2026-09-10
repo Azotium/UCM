@@ -1,6 +1,6 @@
 azure-core==1.39.0
 azure-devops==7.1.0b4
-azure_storage==0.37.0
+#azure_storage==0.37.0
 cryptography==46.0.7
 keyring==25.7.0
 msrest==0.7.1
