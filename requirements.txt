@@ -1,0 +1,13 @@
+azure-core==1.39.0
+azure-devops==7.1.0b4
+azure_storage==0.37.0
+cryptography==46.0.7
+keyring==25.7.0
+msrest==0.7.1
+pandas==3.0.2
+plotly==6.7.0
+PyYAML==6.0.3
+Requests==2.33.1
+sigma==0.0.1
+streamlit==1.56.0
+tomli==2.4.1
