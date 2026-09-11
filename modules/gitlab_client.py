@@ -106,8 +106,13 @@ class GitLabClient:
 
         # Initialise the python-gitlab connection.
         # ssl_verify=True is the default; set to False for self-signed certs.
-        self._gl = gitlab.Gitlab(url=self._url, private_token=self._token)
-        self._gl.auth()   # validates the token immediately; raises on failure
+        ###self._gl = gitlab.Gitlab(url=self._url, private_token=self._token)
+        ###self._gl.auth()   # validates the token immediately; raises on failure
+        
+        self._gl = gitlab.Gitlab(
+            url=self._url,
+            private_token=self._token,
+        )
 
         # Cache of resolved GitLab project objects keyed by "namespace/repo_name"
         # to avoid repeated API lookups within a session.
@@ -373,7 +378,7 @@ class GitLabClient:
 
     def push_files(
         self,
-        namespace: str,
+        project: str,
         repo: str,
         branch: str,
         files: list[dict],      # [{"path": str, "content": str}, ...]
@@ -389,7 +394,7 @@ class GitLabClient:
         GitLab commits don't have a separate push_id concept, so push_id is
         set to None (callers only display commit_id[:8]).
         """
-        gl_project = self._get_gl_project(namespace, repo)
+        gl_project = self._get_gl_project(project, repo)
 
         # Build the actions list: each file is either "create" or "update"
         actions = []
@@ -508,34 +513,55 @@ class GitLabClient:
 # constructed in app.py).
 
 @st.cache_data(ttl=600, show_spinner=False)
+# def _cached_gl_list_namespaces(url: str, token: str) -> list[str]:
+#     """
+#     Return accessible top-level group paths + the authenticated user's namespace.
+#     Cached 10 minutes.
+#     """
+#     gl = gitlab.Gitlab(url=url, private_token=token)
+
+#     namespaces = []
+
+#     # Top-level groups the token has at least Reporter access to
+#     try:
+#         groups     = gl.groups.list(top_level_only=True, min_access_level=10, get_all=True)
+#         namespaces = [g.full_path for g in groups]
+#     except Exception:
+#         pass
+
+#     # Also include the authenticated user's personal namespace
+#     try:
+#         # user = gl.auth()
+#         # if hasattr(gl, "user") and gl.user:
+#         #     personal = gl.user.username
+#         #     if personal not in namespaces:
+#         #         namespaces.insert(0, personal)
+#         user = gl.http_get("/user")
+#         personal = user["username"]
+#         if personal not in namespaces:
+#             namespaces.insert(0, personal)
+        
+#     except Exception:
+#         pass
+
+#     return sorted(namespaces) if namespaces else ["(no groups found)"]
+
 def _cached_gl_list_namespaces(url: str, token: str) -> list[str]:
     """
-    Return accessible top-level group paths + the authenticated user's namespace.
-    Cached 10 minutes.
+    Return accessible top-level GitLab groups.
     """
-    gl = gitlab.Gitlab(url=url, private_token=token)
+    gl = gitlab.Gitlab(
+        url=url.rstrip("/"),
+        private_token=token,
+    )
 
-    namespaces = []
-
-    # Top-level groups the token has at least Reporter access to
     try:
-        groups     = gl.groups.list(top_level_only=True, min_access_level=10, get_all=True)
-        namespaces = [g.full_path for g in groups]
-    except Exception:
-        pass
+        groups = gl.groups.list(get_all=True)
 
-    # Also include the authenticated user's personal namespace
-    try:
-        user = gl.auth()
-        if hasattr(gl, "user") and gl.user:
-            personal = gl.user.username
-            if personal not in namespaces:
-                namespaces.insert(0, personal)
-    except Exception:
-        pass
+        return sorted(g.full_path for g in groups)
 
-    return sorted(namespaces) if namespaces else ["(no groups found)"]
-
+    except Exception as e:
+        raise RuntimeError(f"Could not retrieve GitLab groups: {e}")
 
 @st.cache_data(ttl=600, show_spinner=False)
 def _cached_gl_list_repos(url: str, token: str, namespace: str) -> list[str]:
