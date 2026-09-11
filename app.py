@@ -13,10 +13,34 @@ Architecture overview
   modules/local_storage.py (PAT is encrypted with a keyring-stored key).
 - ADO API calls are cached with @st.cache_data (TTL 5–10 min) to avoid
   hammering the API on every Streamlit rerun.
+  
+Provider support
+----------------
+Two Git providers are supported: Azure DevOps and GitLab.
+The provider is selected in the sidebar and stored in
+st.session_state.provider ("ado" | "gitlab").
+ 
+All pages and modules use st.session_state.ado_client as the client
+object regardless of provider — GitLabClient exposes the identical
+public interface as ADOClient, so nothing else needs to know which
+provider is active.
+ 
+Session state keys shared by all pages
+---------------------------------------
+  ado_client  — the active client object (ADOClient or GitLabClient)
+  provider    — "ado" | "gitlab"
+  org_url     — ADO org URL  OR  GitLab instance URL
+  pat         — ADO PAT  OR  GitLab private token
+  project     — ADO project name  OR  GitLab namespace (group path)
+  repo        — repository name (same concept on both platforms)
+  branch      — active branch name
+  uc_root     — root path within the repo where UC folders live
+  projects    — cached list of projects/namespaces for the selectbox
+
 """
 
-import streamlit as st
 import sys, os
+import streamlit as st
 
 # Ensure modules/ and ui_pages/ are importable from any working directory
 sys.path.insert(0, os.path.dirname(__file__))
@@ -132,6 +156,7 @@ load_from_storage()   # reads localStorage → session_state on first render aft
 # Keys already populated by load_from_storage() are intentionally NOT overwritten.
 _defaults = {
     "ado_client":        None,   # ADOClient instance (not serialisable — rebuilt on each session)
+    "provider":          "ado",  # "ado" | "gitlab"
     "use_cases":         [],     # list[DetectionUseCase] loaded from the repo
     "sigma_results":     {},     # {uc.name: SigmaValidationResult} — populated by validator/auto_refresh
     "readme_results":    {},     # {uc.name: ReadmeValidationResult}
@@ -151,6 +176,23 @@ for k, v in _defaults.items():
     if k not in st.session_state:
         st.session_state[k] = v
 
+# ---------------------------------------------------------------------------
+# Provider-aware client factory
+# ---------------------------------------------------------------------------
+ 
+def _build_client(provider: str, org_url: str, pat: str):
+    """
+    Instantiate and return the correct client based on provider.
+    Both clients expose the same public interface.
+    """
+    if provider == "gitlab":
+        from modules.gitlab_client import GitLabClient
+        client = GitLabClient(url=org_url, token=pat)
+    else:
+        from modules.ado_client import ADOClient
+        client = ADOClient(org_url=org_url, pat=pat)
+    return client
+
  
 # ── Auto-reconnect after browser refresh ─────────────────────────────────────
 # After a hard refresh, Streamlit loses all Python objects (including the
@@ -165,34 +207,24 @@ if (
     and st.session_state.pat
 ):
     try:
-        from modules.ado_client import ADOClient
-        client = ADOClient(
-            org_url=st.session_state.org_url,
-            pat=st.session_state.pat,
-        )
-        # list_projects is cached — essentially free after first call
+        client   = _build_client(st.session_state.provider,
+                                  st.session_state.org_url,
+                                  st.session_state.pat)
         projects = client.list_projects()
         st.session_state.ado_client = client
-        st.session_state.projects = projects
+        st.session_state.projects   = projects
  
-        # Also restore use cases if we have enough context
-        if (
-            st.session_state.project
-            and st.session_state.repo
-            and st.session_state.branch
-        ):
+        if st.session_state.project and st.session_state.repo and st.session_state.branch:
             use_cases = client.list_use_cases(
                 st.session_state.project,
                 st.session_state.repo,
                 st.session_state.branch,
-                use_cases_root=st.session_state.uc_root,
+                use_cases_root=st.session_state.uc_root
             )
             st.session_state.use_cases = use_cases
     except Exception as e:
-        # Silent failure — user will see the "Not connected" indicator and
-        # can reconnect manually. Don't crash the app.
         st.sidebar.warning(f"Auto-reconnect failed: {e}")
-        st.session_state._auto_connect_done = False  # allow retry on next manual connect
+        st.session_state._auto_connect_done = False
 
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
@@ -203,6 +235,7 @@ with st.sidebar:
 
     # Connection status indicator — green when ADOClient is live
     if st.session_state.ado_client:
+        provider_label = "GitLab" if st.session_state.provider == "gitlab" else "Azure DevOps"
         st.markdown("🟢 **Connected**")
     else:
         st.markdown("🔴 **Not connected**")
@@ -210,13 +243,35 @@ with st.sidebar:
     # ── Azure DevOps connection section ───────────────────────────────────────
     # Collapsed in a st.expander so it doesn't dominate the sidebar once connected
     with st.expander("Azure DevOps", expanded=not st.session_state.ado_client):
+        # Provider radio — switches the form labels and placeholder text
+        provider = st.radio(
+            "Provider",
+            options=["ado", "gitlab"],
+            format_func=lambda x: "☁️ Azure DevOps" if x == "ado" else "🦊 GitLab",
+            index=0 if st.session_state.provider == "ado" else 1,
+            horizontal=True,
+            label_visibility="collapsed",
+        )
+ 
+        # Persist provider choice so auto-reconnect uses it
+        st.session_state.provider = provider
+ 
+        if provider == "ado":
+            url_label       = "Organization URL"
+            url_placeholder = "https://dev.azure.com/myorg"
+            token_label     = "Personal Access Token"
+        else:
+            url_label       = "GitLab URL"
+            url_placeholder = "https://gitlab.com"
+            token_label     = "Private Token (api + read_repository)"
+
         org_url = st.text_input(
-            "Organization URL",
-            placeholder="https://dev.azure.com/myorg",
+            url_label,
+            placeholder=url_placeholder,
             value=st.session_state.org_url,
         )
         pat = st.text_input(
-            "Personal Access Token",
+            token_label,
             type="password",
             value=st.session_state.pat,
         )
@@ -227,7 +282,7 @@ with st.sidebar:
                 if org_url and pat:
                     try:
                         from modules.ado_client import ADOClient
-                        client = ADOClient(org_url=org_url, pat=pat)
+                        client   = _build_client(provider, org_url, pat)
                         projects = client.list_projects()
 
                         # Store client and metadata in session state
@@ -246,12 +301,13 @@ with st.sidebar:
                             "branch": st.session_state.get("branch", "dev"),
                             "uc_root": st.session_state.get("uc_root", "/UseCases"),
                         })
-                        st.success(f"Connected — {len(projects)} project(s)")
+                        label = "namespace(s)" if provider == "gitlab" else "project(s)"
+                        st.success(f"Connected — {len(projects)} {label}")
                         st.rerun()
                     except Exception as e:
                         st.error(f"Connection failed: {e}")
                 else:
-                    st.warning("Enter org URL and PAT")
+                    st.warning(f"Enter {url_label} and {token_label}")
         with col_disc:
             if st.button("✕", help="Disconnect & clear saved session", width='stretch'):
                 clear_storage()
@@ -263,13 +319,16 @@ with st.sidebar:
     # Only shown when connected. Dropdowns are populated from cached ADO API calls.
 
     if st.session_state.ado_client:
+        is_gitlab = st.session_state.provider == "gitlab"
         with st.expander("Repository", expanded=True):
             client = st.session_state.ado_client
     
-            projects = st.session_state.get("projects", [])
+            project_label = "Namespace / Group" if is_gitlab else "Project"
+            projects      = st.session_state.get("projects", [])
             saved_project = st.session_state.get("project")
-            project_idx = projects.index(saved_project) if saved_project in projects else 0
-            project = st.selectbox("Project", projects, index=project_idx)
+            project_idx   = projects.index(saved_project) if saved_project in projects else 0
+            project       = st.selectbox(project_label, projects, index=project_idx)
+
     
             if project:
                 # list_repos is @st.cache_data — won't hit the API on every render
@@ -308,6 +367,7 @@ with st.sidebar:
                             save_to_storage({
                                 "org_url": st.session_state.org_url,
                                 "pat": st.session_state.pat,
+                                "provider": st.session_state.provider,
                                 "project": project,
                                 "repo": repo,
                                 "branch": branch,
@@ -327,16 +387,29 @@ with st.sidebar:
                     if st.session_state.use_cases:
                         st.caption(f"📦 {len(st.session_state.use_cases)} use cases in memory")
                         if st.button("🗑️ Clear cache", width='stretch', help="Force reload from ADO on next load"):
-                            from modules.ado_client import (
-                                _cached_list_use_cases, _cached_list_projects,
-                                _cached_list_repos, _cached_list_branches
-                            )
-                            _cached_list_use_cases.clear()
-                            _cached_list_projects.clear()
-                            _cached_list_repos.clear()
-                            _cached_list_branches.clear()
+                            if is_gitlab:
+                                from modules.gitlab_client import (
+                                    _cached_gl_list_use_cases,
+                                    _cached_gl_list_namespaces,
+                                    _cached_gl_list_repos,
+                                    _cached_gl_list_branches,
+                                )
+                                _cached_gl_list_use_cases.clear()
+                                _cached_gl_list_namespaces.clear()
+                                _cached_gl_list_repos.clear()
+                                _cached_gl_list_branches.clear()
+                            else:
+                                from modules.ado_client import (
+                                    _cached_list_use_cases, _cached_list_projects,
+                                    _cached_list_repos, _cached_list_branches,
+                                )
+                                _cached_list_use_cases.clear()
+                                _cached_list_projects.clear()
+                                _cached_list_repos.clear()
+                                _cached_list_branches.clear()
                             st.session_state.use_cases = []
                             st.rerun()
+
 
 
 # ── Navigation ────────────────────────────────────────────────────────────────

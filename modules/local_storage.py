@@ -31,11 +31,13 @@ import json
 from cryptography.fernet import Fernet
 import keyring
 
+STORAGE_KEY = "dep_session"   # key used in localStorage
+
 # Path to the persistent config file on disk
 CONFIG_PATH = os.path.join(os.path.expanduser("~"), ".dep_session.json")
 
 # Fields to persist/restore. `pat` is handled separately (encrypted).
-KEYS = ("org_url", "pat", "project", "repo", "branch", "uc_root")
+KEYS = ("org_url", "pat", "provider", "project", "repo", "branch", "uc_root")
 
 # Keyring identifiers — used to store/retrieve the encryption key
 KEYRING_SERVICE = "dep_app"

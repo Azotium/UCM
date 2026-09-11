@@ -63,13 +63,23 @@ def render():
                     if pr.get("created_date"):
                         st.caption(f"Created: {pr['created_date']}")
 
-                    # Deep link to the PR in Azure DevOps
-                    url = f"{st.session_state.get('org_url')}/{project}/_git/{repo}/pullrequest/{pr['id']}"
-                    st.markdown(f"[🔗 Open in Azure DevOps]({url})")
+                    # Build the correct URL based on provider
+                    if st.session_state.get("provider") == "gitlab":
+                        # GitLab MRs carry a web_url field from list_pull_requests()
+                        url = pr.get("web_url", "")
+                        link_label = "🔗 Open in GitLab"
+                    else:
+                        url = f"{st.session_state.get('org_url')}/{project}/_git/{repo}/pullrequest/{pr['id']}"
+                        link_label = "🔗 Open in Azure DevOps"
+                    if url:
+                        st.markdown(f"[{link_label}]({url})")
+
 
     # ── Tab 2: Create PR ──────────────────────────────────────────────────────
     with tabs[1]:
-        st.markdown("Create a PR from a feature branch to `dev`.")
+        is_gl   = st.session_state.get("provider") == "gitlab"
+        pr_term = "Merge Request" if is_gl else "Pull Request"
+        st.markdown(f"Create a {pr_term} from a feature branch to `dev`.")
 
         try:
             branches = client.list_branches(project, repo)
@@ -99,7 +109,7 @@ def render():
         if not all_checked:
             st.warning("Complete the checklist before creating a PR.")
 
-        if st.button("🚀 Create Pull Request", disabled=not (title and all_checked)):
+        if st.button(f"🚀 Create {pr_term}", disabled=not (title and all_checked)):
             try:
                 result = client.create_pull_request(
                     project=project, repo=repo,
